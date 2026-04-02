@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-skeleton"
+version = "0.1.0"
+description = "Probe → Plan → Load. Universal model loader for multi-GPU LLM deployment."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    {name = "Eyelid AI Labs", email = "hello@eyelid.ai"},
+]
+keywords = ["llm", "gpu", "model-loading", "multi-gpu", "huggingface", "transformers", "moe", "fp8"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "torch>=2.0",
+    "transformers>=4.30",
+    "huggingface_hub>=0.20",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "psutil",
+]
+quantization = [
+    "bitsandbytes>=0.41",
+]
+
+[project.urls]
+Homepage = "https://github.com/eyelid-ai-labs/llm-skeleton"
+Repository = "https://github.com/eyelid-ai-labs/llm-skeleton"
+Issues = "https://github.com/eyelid-ai-labs/llm-skeleton/issues"
+
+[tool.setuptools.packages.find]
+include = ["llm_skeleton*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
