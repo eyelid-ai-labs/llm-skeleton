@@ -457,8 +457,14 @@ def probe_model(model_name: str, token: Optional[str] = None) -> ModelProfile:
     architectures = config.get("architectures", [])
     arch_class = architectures[0] if architectures else ""
     
+    # VLMs nest language model config under text_config — use that for sizing
+    effective_config = config
+    if config.get("text_config") and not config.get("num_hidden_layers"):
+        logger.info("VLM detected — using text_config for layer sizing")
+        effective_config = {**config, **config["text_config"]}
+    
     # Detect MoE
-    moe_info = _detect_moe(config)
+    moe_info = _detect_moe(effective_config)
     
     # Detect dtype
     native_dtype = _detect_dtype(config)
@@ -485,12 +491,12 @@ def probe_model(model_name: str, token: Optional[str] = None) -> ModelProfile:
                        f"will use BitsAndBytesConfig approach for quantization")
     
     # Size estimation
-    num_layers = config.get("num_hidden_layers", 0)
-    hidden_size = config.get("hidden_size", 0)
-    intermediate_size = config.get("intermediate_size", 0)
-    vocab_size = config.get("vocab_size", 0)
-    num_heads = config.get("num_attention_heads", 0)
-    num_kv_heads = config.get("num_key_value_heads", num_heads)
+    num_layers = effective_config.get("num_hidden_layers", 0)
+    hidden_size = effective_config.get("hidden_size", 0)
+    intermediate_size = effective_config.get("intermediate_size", 0)
+    vocab_size = effective_config.get("vocab_size", 0)
+    num_heads = effective_config.get("num_attention_heads", 0)
+    num_kv_heads = effective_config.get("num_key_value_heads", num_heads)
     
     # Build per-layer profiles
     layer_profiles = []
@@ -503,10 +509,10 @@ def probe_model(model_name: str, token: Optional[str] = None) -> ModelProfile:
         n_experts = moe_info["num_experts"] if is_moe_layer else 0
         
         size_bf16 = _estimate_layer_size(
-            config, is_moe_layer, n_experts, moe_info["shared_expert"], bytes_per_param=2
+            effective_config, is_moe_layer, n_experts, moe_info["shared_expert"], bytes_per_param=2
         )
         size_int8 = _estimate_layer_size(
-            config, is_moe_layer, n_experts, moe_info["shared_expert"], bytes_per_param=1
+            effective_config, is_moe_layer, n_experts, moe_info["shared_expert"], bytes_per_param=1
         )
         size_int4 = size_bf16 // 4  # Rough: 0.5 bytes per param
         
@@ -531,7 +537,7 @@ def probe_model(model_name: str, token: Optional[str] = None) -> ModelProfile:
             active_params += layer_params_bf16
     
     # Embedding size
-    embed_size_bf16 = _estimate_embedding_size(config, bytes_per_param=2)
+    embed_size_bf16 = _estimate_embedding_size(effective_config, bytes_per_param=2)
     embed_params = embed_size_bf16 // 2
     total_params += embed_params
     active_params += embed_params
@@ -561,9 +567,9 @@ def probe_model(model_name: str, token: Optional[str] = None) -> ModelProfile:
     if actual_size is not None:
         actual_gb = actual_size / (1024**3)
         estimated_gb = total_native / (1024**3)
-        if abs(actual_gb - estimated_gb) / max(estimated_gb, 1) > 0.2:
+        if abs(actual_gb - estimated_gb) / max(estimated_gb, 0.01) > 0.2:
             logger.warning(f"Size estimate ({estimated_gb:.1f}GB) differs from actual ({actual_gb:.1f}GB) "
-                           f"by {abs(actual_gb - estimated_gb) / estimated_gb:.0%} — using actual")
+                           f"by {abs(actual_gb - estimated_gb) / max(estimated_gb, 0.01):.0%} — using actual")
         
         # Use actual size as native, scale bf16/int8/int4 proportionally
         scale = actual_size / total_native if total_native > 0 else 1.0
