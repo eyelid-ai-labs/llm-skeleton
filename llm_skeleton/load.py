@@ -50,16 +50,13 @@ def execute_plan(
     # Select the correct auto class based on model architecture.
     # VLMs (ForConditionalGeneration) silently load to CPU when loaded via
     # AutoModelForCausalLM, even with a valid GPU device_map.
+    # AutoModel is the only reliable universal class — it resolves to the
+    # correct architecture via the model's config.json auto_map.
     auto_class = AutoModelForCausalLM
     if plan.profile.is_vlm:
-        auto_class_name = plan.profile.auto_class
-        if auto_class_name == "AutoModelForConditionalGeneration":
-            from transformers import AutoModelForConditionalGeneration
-            auto_class = AutoModelForConditionalGeneration
-        elif auto_class_name == "AutoModel":
-            from transformers import AutoModel
-            auto_class = AutoModel
-        logger.info(f"VLM detected — using {auto_class_name} instead of AutoModelForCausalLM")
+        from transformers import AutoModel
+        auto_class = AutoModel
+        logger.info(f"VLM detected — using AutoModel instead of AutoModelForCausalLM")
     
     logger.info(f"Loading {model_name}...")
     logger.info(f"  Strategy: {plan.strategy.quantization.value}")

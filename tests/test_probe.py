@@ -443,14 +443,14 @@ class TestVLMDetection:
 
     def test_gemma4_auto_class(self):
         result = _detect_vlm(GEMMA4_VLM_CONFIG, "Gemma4ForConditionalGeneration")
-        assert result["auto_class"] == "AutoModelForConditionalGeneration"
+        assert result["auto_class"] == "AutoModel"
 
     def test_llava_is_vlm(self):
         result = _detect_vlm(LLAVA_VLM_CONFIG, "LlavaForConditionalGeneration")
         assert result["is_vlm"] is True
 
     def test_internvl_uses_auto_model(self):
-        """InternVL registers under AutoModel, not AutoModelForConditionalGeneration."""
+        """InternVL uses AutoModel like all VLMs."""
         result = _detect_vlm(INTERNVL_VLM_CONFIG, "InternVLChatModel")
         assert result["is_vlm"] is True
         assert result["auto_class"] == "AutoModel"

@@ -171,7 +171,7 @@ class TestVLMLoadKwargs:
         """VLM models get trust_remote_code=True even without custom code."""
         profile = make_mock_profile(num_layers=10, layer_size_gb=1.0)
         profile.is_vlm = True
-        profile.auto_class = "AutoModelForConditionalGeneration"
+        profile.auto_class = "AutoModel"
         hardware = make_mock_hardware(1, 80.0)
 
         plan = plan_loading(profile, hardware, headroom_gb=5.0)

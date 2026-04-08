@@ -6,6 +6,20 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-04-08
+
+### Fixed
+
+- VLM auto class resolution used the non-existent `AutoModelForConditionalGeneration`
+  from transformers, which would crash at import time. All VLMs now resolve to
+  `AutoModel`, which is the only reliable universal class — it dispatches to the correct
+  architecture (Gemma4ForConditionalGeneration, LlavaForConditionalGeneration, etc.) via
+  the model's own config.json `auto_map` and `architectures` fields.
+- Simplified `_detect_vlm()` to always return `auto_class="AutoModel"` for VLMs instead
+  of trying to pick between non-existent or narrower auto classes.
+- Simplified `execute_plan` VLM branch to unconditionally use `AutoModel` instead of
+  dispatching on the `auto_class` string.
+
 ## [0.4.0] - 2026-04-08
 
 ### Fixed

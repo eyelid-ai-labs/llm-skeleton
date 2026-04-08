@@ -445,13 +445,13 @@ def _detect_custom_code(config: dict) -> dict:
     if not auto_map:
         return {"uses_custom_code": False, "custom_model_class": "", "auto_map": {}}
     
-    # Extract the model class name
-    model_cls = auto_map.get("AutoModelForCausalLM", "")
-    if not model_cls:
-        # VLMs may only register under AutoModelForConditionalGeneration or AutoModel
-        model_cls = auto_map.get("AutoModelForConditionalGeneration", "")
-    if not model_cls:
-        model_cls = auto_map.get("AutoModel", "")
+    # Extract the model class name — check all common auto class keys
+    model_cls = (
+        auto_map.get("AutoModelForCausalLM", "") or
+        auto_map.get("AutoModelForVision2Seq", "") or
+        auto_map.get("AutoModel", "") or
+        ""
+    )
     if "--" in model_cls:
         # Format: "org/repo--modeling_file.ClassName"
         model_cls = model_cls.split("--")[-1]
@@ -486,9 +486,14 @@ def _detect_vlm(config: dict, arch_class: str) -> dict:
     """Detect if model is a VLM and which auto class to use.
     
     VLMs (Gemma4ForConditionalGeneration, LlavaForConditionalGeneration, etc.)
-    must be loaded with AutoModel or AutoModelForConditionalGeneration, not
-    AutoModelForCausalLM. Using the wrong class causes from_pretrained to
-    silently load to CPU even with a valid GPU device_map.
+    must be loaded with AutoModel, not AutoModelForCausalLM. Using the wrong
+    class causes from_pretrained to silently load to CPU even with a valid GPU
+    device_map.
+    
+    We always resolve to AutoModel for VLMs because:
+    - AutoModelForConditionalGeneration doesn't exist in transformers
+    - AutoModelForVision2Seq exists but is narrower than needed
+    - AutoModel resolves correctly via the model's own auto_map/architectures
     """
     is_vlm = False
     auto_class = "AutoModelForCausalLM"
@@ -506,17 +511,10 @@ def _detect_vlm(config: dict, arch_class: str) -> dict:
                 is_vlm = True
                 break
     
-    # Check auto_map for the right loading class
-    auto_map = config.get("auto_map", {})
     if is_vlm:
-        if "AutoModelForConditionalGeneration" in auto_map:
-            auto_class = "AutoModelForConditionalGeneration"
-        elif "AutoModel" in auto_map:
-            auto_class = "AutoModel"
-        else:
-            # No custom auto_map — use the standard HF auto class
-            # AutoModel handles all architectures correctly
-            auto_class = "AutoModelForConditionalGeneration"
+        # AutoModel is the only reliable universal class for VLMs.
+        # It resolves to the correct architecture via the model's config.
+        auto_class = "AutoModel"
     
     if is_vlm:
         logger.info(f"VLM detected (arch={arch_class}) — will use {auto_class}")
