@@ -184,10 +184,10 @@ Dependencies: `transformers`, `torch`, `huggingface_hub`. Optional: `psutil` for
 ## Testing
 
 ```bash
-pytest llm_skeleton/tests/ -v
+pytest tests/ -v
 ```
 
-40 tests covering bin-packing (contiguity, headroom, MoE variance, quantization, edge cases), probe (dtype detection, MoE detection, custom code, library requirements), and planning (strategy selection, GPU subsets, load kwargs). All tests run offline — no GPU or HuggingFace access needed.
+46 tests covering bin-packing (contiguity, headroom, MoE variance, quantization, edge cases), probe (dtype detection, MoE detection, custom code, library requirements), and planning (strategy selection, GPU subsets, load kwargs). All tests run offline — no GPU or HuggingFace access needed.
 
 ## Validated On
 
@@ -212,7 +212,7 @@ llm_skeleton/
     orchestrator.py      # DualModelOrchestrator for multi-model loading
     hardware.py          # GPU detection (VRAM, compute capability)
     compatibility.py     # Python version, library, dtype checks
-    tests/               # 40 offline tests
+    tests/               # 46 offline tests
 ```
 
 ## Rules Encoded From Failure

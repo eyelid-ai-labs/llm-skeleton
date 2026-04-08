@@ -10,7 +10,6 @@ from typing import Dict, List, Optional, Any
 from enum import Enum
 import logging
 import json
-import re
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +188,74 @@ STANDARD_ARCHITECTURES = {
     "DeepseekV2ForCausalLM",
     "DeepseekV3ForCausalLM",
 }
+
+# Common nested language-config keys used by VLM families.
+# These carry the decoder/LLM dimensions we need for sizing.
+NESTED_LANGUAGE_CONFIG_KEYS = (
+    "text_config",      # Gemma-4 style
+    "language_config",  # LLaVA-style
+    "llm_config",       # InternVL-style
+)
+
+
+def _sizing_signal_score(config: dict) -> int:
+    """Score how likely a config dict is to contain decoder sizing fields."""
+    if not isinstance(config, dict):
+        return 0
+    signal_keys = (
+        "num_hidden_layers",
+        "hidden_size",
+        "intermediate_size",
+        "num_attention_heads",
+        "vocab_size",
+    )
+    return sum(1 for key in signal_keys if config.get(key) not in (None, 0))
+
+
+def _resolve_effective_config(config: dict) -> dict:
+    """Resolve which config block should drive language-model sizing.
+
+    Most pure LLMs store sizing at top level. Many VLMs store decoder sizing
+    under a nested key such as text_config/language_config/llm_config.
+
+    Strategy:
+    - Prefer a nested language config when top-level is missing layer info.
+    - Otherwise prefer whichever block has stronger sizing signals.
+    - Merge selected nested block onto top-level so unrelated metadata remains.
+    """
+    top_score = _sizing_signal_score(config)
+    best_key = None
+    best_nested = None
+    best_score = top_score
+
+    for key in NESTED_LANGUAGE_CONFIG_KEYS:
+        nested = config.get(key)
+        if not isinstance(nested, dict):
+            continue
+
+        nested_score = _sizing_signal_score(nested)
+        if nested_score == 0:
+            continue
+
+        top_missing_layers = config.get("num_hidden_layers") in (None, 0)
+        nested_has_layers = nested.get("num_hidden_layers") not in (None, 0)
+
+        should_replace = False
+        if top_missing_layers and nested_has_layers:
+            should_replace = True
+        elif nested_score > best_score:
+            should_replace = True
+
+        if should_replace:
+            best_key = key
+            best_nested = nested
+            best_score = nested_score
+
+    if best_key and best_nested:
+        logger.info(f"VLM detected — using {best_key} for layer sizing")
+        return {**config, **best_nested}
+
+    return config
 
 
 def _detect_dtype(config: dict) -> NativeDtype:
@@ -457,11 +524,9 @@ def probe_model(model_name: str, token: Optional[str] = None) -> ModelProfile:
     architectures = config.get("architectures", [])
     arch_class = architectures[0] if architectures else ""
     
-    # VLMs nest language model config under text_config — use that for sizing
-    effective_config = config
-    if config.get("text_config") and not config.get("num_hidden_layers"):
-        logger.info("VLM detected — using text_config for layer sizing")
-        effective_config = {**config, **config["text_config"]}
+    # VLMs can nest language model config under multiple keys.
+    # Resolve the best block for decoder/layer sizing.
+    effective_config = _resolve_effective_config(config)
     
     # Detect MoE
     moe_info = _detect_moe(effective_config)

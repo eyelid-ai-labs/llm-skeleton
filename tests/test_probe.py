@@ -10,6 +10,7 @@ from llm_skeleton.probe import (
     _detect_dtype, _detect_moe, _detect_custom_code,
     _detect_required_libraries, _detect_python_version,
     _estimate_layer_size, _estimate_embedding_size,
+    _resolve_effective_config,
     NativeDtype, ModelProfile,
 )
 
@@ -187,3 +188,100 @@ class TestSizeEstimation:
         size_gb = size / (1024**3)
         # 151936 * 3584 * 2 bytes ≈ 1.0GB (+ lm_head if not tied)
         assert 0.5 < size_gb < 3.0
+
+
+class TestVLMConfigResolution:
+    def test_prefers_text_config_when_top_level_missing_layers(self):
+        config = {
+            "model_type": "gemma4_vlm",
+            "text_config": {
+                "num_hidden_layers": 42,
+                "hidden_size": 3072,
+                "intermediate_size": 8192,
+                "num_attention_heads": 24,
+                "vocab_size": 256000,
+            },
+        }
+
+        effective = _resolve_effective_config(config)
+
+        assert effective["num_hidden_layers"] == 42
+        assert effective["hidden_size"] == 3072
+
+    def test_prefers_language_config_when_richer_than_top_level(self):
+        config = {
+            "model_type": "llava",
+            # Sparse top-level sizing fields (vision-first config shape)
+            "num_hidden_layers": 1,
+            "hidden_size": 1024,
+            "language_config": {
+                "num_hidden_layers": 40,
+                "hidden_size": 5120,
+                "intermediate_size": 13696,
+                "num_attention_heads": 40,
+                "vocab_size": 32000,
+            },
+        }
+
+        effective = _resolve_effective_config(config)
+
+        assert effective["num_hidden_layers"] == 40
+        assert effective["hidden_size"] == 5120
+        assert effective["vocab_size"] == 32000
+
+    def test_prefers_llm_config_when_present(self):
+        config = {
+            "model_type": "internvl",
+            "llm_config": {
+                "num_hidden_layers": 32,
+                "hidden_size": 4096,
+                "intermediate_size": 11008,
+                "num_attention_heads": 32,
+                "vocab_size": 151552,
+            },
+        }
+
+        effective = _resolve_effective_config(config)
+
+        assert effective["num_hidden_layers"] == 32
+        assert effective["hidden_size"] == 4096
+
+    def test_keeps_top_level_for_standard_llm(self):
+        config = {
+            "model_type": "llama",
+            "num_hidden_layers": 32,
+            "hidden_size": 4096,
+            "intermediate_size": 11008,
+            "num_attention_heads": 32,
+            "vocab_size": 32000,
+        }
+
+        effective = _resolve_effective_config(config)
+
+        assert effective["num_hidden_layers"] == 32
+        assert effective["hidden_size"] == 4096
+
+
+class TestTiedEmbeddings:
+    def test_tied_embeddings_are_smaller_than_untied(self):
+        base = {
+            "vocab_size": 10000,
+            "hidden_size": 2048,
+        }
+
+        tied_size = _estimate_embedding_size({**base, "tie_word_embeddings": True}, bytes_per_param=2)
+        untied_size = _estimate_embedding_size({**base, "tie_word_embeddings": False}, bytes_per_param=2)
+
+        assert untied_size > tied_size
+        assert untied_size - tied_size == base["vocab_size"] * base["hidden_size"] * 2
+
+    def test_tie_word_embeddings_defaults_true(self):
+        base = {
+            "vocab_size": 10000,
+            "hidden_size": 2048,
+        }
+
+        default_size = _estimate_embedding_size(base, bytes_per_param=2)
+        explicit_tied_size = _estimate_embedding_size({**base, "tie_word_embeddings": True}, bytes_per_param=2)
+
+        assert default_size == explicit_tied_size

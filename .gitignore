@@ -12,7 +12,7 @@ build/
 .venv/
 venv/
 env/
-
+llm-skeleton-venv/
 # IDE
 .vscode/
 .idea/
