@@ -161,7 +161,7 @@ for FP8 (2×) and Mxfp4 (1.3×) on incompatible hardware.
 **Methods:**
 
 - `summary() → str` — Human-readable plan summary.
-- `get_load_kwargs() → dict` — Build kwargs for `from_pretrained`. Includes `device_map`, `max_memory`, `quantization_config` (if needed), `torch_dtype`, and `trust_remote_code`.
+- `get_load_kwargs() → dict` — Build kwargs for `from_pretrained`. Includes `device_map`, `max_memory`, `quantization_config` (if needed), `dtype`, and `trust_remote_code`.
 
 ### `LoadingStrategy`
 

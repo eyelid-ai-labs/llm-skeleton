@@ -112,10 +112,10 @@ class LoadingPlan:
             kwargs["quantization_config"] = BitsAndBytesConfig(load_in_4bit=True)
         else:
             # No BNB quantization — set dtype
-            # For pre-quantized FP8 models, don't set torch_dtype (let HF handle dequantization)
+            # For pre-quantized FP8 models, don't set dtype (let HF handle dequantization)
             if not self.profile.is_pre_quantized:
                 dtype = torch.bfloat16 if self.strategy.dtype_str == "bfloat16" else torch.float16
-                kwargs["torch_dtype"] = dtype
+                kwargs["dtype"] = dtype
         
         return kwargs
 

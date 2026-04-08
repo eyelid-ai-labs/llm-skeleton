@@ -6,6 +6,14 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-04-08
+
+### Fixed
+
+- Replace `torch_dtype` kwarg with `dtype` in `get_load_kwargs()` for transformers 5.5+
+  compatibility. The old `torch_dtype` parameter was deprecated and causes warnings on
+  recent transformers versions.
+
 ## [0.3.0] - 2026-04-08
 
 ### Added

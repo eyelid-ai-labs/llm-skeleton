@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-skeleton"
-version = "0.3.0"
+version = "0.3.1"
 description = "Probe → Plan → Load. Universal model loader for multi-GPU LLM deployment."
 readme = "README.md"
 license = "MIT"
