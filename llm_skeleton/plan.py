@@ -97,7 +97,7 @@ class LoadingPlan:
         import torch
         
         kwargs = {
-            "trust_remote_code": self.profile.uses_custom_code,
+            "trust_remote_code": self.profile.uses_custom_code or self.profile.is_vlm,
             "low_cpu_mem_usage": True,
             "device_map": self.strategy.device_map,
             "max_memory": self.strategy.max_memory,

@@ -12,6 +12,7 @@ from llm_skeleton.probe import (
     _estimate_layer_size, _estimate_embedding_size,
     _resolve_effective_config,
     _detect_layer_prefix, _detect_special_modules,
+    _detect_vlm,
     NativeDtype, ModelProfile,
 )
 
@@ -384,3 +385,92 @@ class TestDetectSpecialModules:
         modules = _detect_special_modules(INTERNVL_WEIGHT_MAP, "model.language_model.layers")
         extras = modules["extra_modules"]
         assert "model.vision_model" in extras
+
+
+# ─── Mock configs for VLM detection ────────────────────────────────────────
+
+GEMMA4_VLM_CONFIG = {
+    "model_type": "gemma4",
+    "architectures": ["Gemma4ForConditionalGeneration"],
+    "vision_config": {"num_hidden_layers": 27, "hidden_size": 1152},
+    "text_config": {
+        "num_hidden_layers": 42,
+        "hidden_size": 3072,
+        "intermediate_size": 8192,
+        "num_attention_heads": 24,
+        "vocab_size": 256000,
+    },
+}
+
+LLAVA_VLM_CONFIG = {
+    "model_type": "llava",
+    "architectures": ["LlavaForConditionalGeneration"],
+    "vision_config": {"hidden_size": 1024},
+    "language_config": {
+        "num_hidden_layers": 32,
+        "hidden_size": 4096,
+    },
+}
+
+INTERNVL_VLM_CONFIG = {
+    "model_type": "internvl_chat",
+    "architectures": ["InternVLChatModel"],
+    "vision_config": {"hidden_size": 1024},
+    "llm_config": {
+        "num_hidden_layers": 32,
+        "hidden_size": 4096,
+    },
+    "auto_map": {
+        "AutoModel": "modeling_internvl_chat.InternVLChatModel",
+    },
+}
+
+AUDIO_VLM_CONFIG = {
+    "model_type": "whisper_llm",
+    "architectures": ["WhisperLLMForConditionalGeneration"],
+    "audio_tower": {"encoder_layers": 12},
+    "text_config": {
+        "num_hidden_layers": 24,
+        "hidden_size": 2048,
+    },
+}
+
+
+class TestVLMDetection:
+    def test_gemma4_is_vlm(self):
+        result = _detect_vlm(GEMMA4_VLM_CONFIG, "Gemma4ForConditionalGeneration")
+        assert result["is_vlm"] is True
+
+    def test_gemma4_auto_class(self):
+        result = _detect_vlm(GEMMA4_VLM_CONFIG, "Gemma4ForConditionalGeneration")
+        assert result["auto_class"] == "AutoModelForConditionalGeneration"
+
+    def test_llava_is_vlm(self):
+        result = _detect_vlm(LLAVA_VLM_CONFIG, "LlavaForConditionalGeneration")
+        assert result["is_vlm"] is True
+
+    def test_internvl_uses_auto_model(self):
+        """InternVL registers under AutoModel, not AutoModelForConditionalGeneration."""
+        result = _detect_vlm(INTERNVL_VLM_CONFIG, "InternVLChatModel")
+        assert result["is_vlm"] is True
+        assert result["auto_class"] == "AutoModel"
+
+    def test_audio_vlm_detected_by_config_key(self):
+        """Models with audio_tower are detected as VLM even without standard suffix."""
+        result = _detect_vlm(AUDIO_VLM_CONFIG, "WhisperLLMForConditionalGeneration")
+        assert result["is_vlm"] is True
+
+    def test_vision_config_key_triggers_vlm(self):
+        """A model with vision_config but standard arch name is still VLM."""
+        config = {"vision_config": {"hidden_size": 768}}
+        result = _detect_vlm(config, "SomeCustomModel")
+        assert result["is_vlm"] is True
+
+    def test_standard_llm_not_vlm(self):
+        result = _detect_vlm(QWEN3_CODER_NEXT_CONFIG, "Qwen3MoeForCausalLM")
+        assert result["is_vlm"] is False
+        assert result["auto_class"] == "AutoModelForCausalLM"
+
+    def test_devstral_not_vlm(self):
+        result = _detect_vlm(DEVSTRAL_CONFIG, "Ministral3ForCausalLM")
+        assert result["is_vlm"] is False

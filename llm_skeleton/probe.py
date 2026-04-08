@@ -104,6 +104,10 @@ class ModelProfile:
     norm_module: str = "model.norm"              # actual final norm path
     extra_modules: List[str] = field(default_factory=list)  # vision_tower etc.
     
+    # VLM (Vision-Language Model) detection
+    is_vlm: bool = False                         # True for multimodal models
+    auto_class: str = "AutoModelForCausalLM"     # HF auto class to use for loading
+    
     # Raw config for debugging
     raw_config: Dict[str, Any] = field(default_factory=dict)
     
@@ -145,6 +149,8 @@ class ModelProfile:
         ])
         if self.uses_custom_code:
             lines.append(f"  ⚠️ Custom code: {self.custom_model_class}")
+        if self.is_vlm:
+            lines.append(f"  🖼️ VLM: loading via {self.auto_class}")
         if self.required_libraries:
             lines.append(f"  Required libs: {', '.join(self.required_libraries)}")
         if self.min_python_version:
@@ -441,6 +447,11 @@ def _detect_custom_code(config: dict) -> dict:
     
     # Extract the model class name
     model_cls = auto_map.get("AutoModelForCausalLM", "")
+    if not model_cls:
+        # VLMs may only register under AutoModelForConditionalGeneration or AutoModel
+        model_cls = auto_map.get("AutoModelForConditionalGeneration", "")
+    if not model_cls:
+        model_cls = auto_map.get("AutoModel", "")
     if "--" in model_cls:
         # Format: "org/repo--modeling_file.ClassName"
         model_cls = model_cls.split("--")[-1]
@@ -452,6 +463,65 @@ def _detect_custom_code(config: dict) -> dict:
         "custom_model_class": model_cls,
         "auto_map": auto_map,
     }
+
+
+# VLM architecture class suffixes — these need AutoModel, not AutoModelForCausalLM
+_VLM_ARCHITECTURE_SUFFIXES = (
+    "ForConditionalGeneration",
+    "ForVision2Seq",
+    "ForImageTextToText",
+)
+
+# Config keys whose presence signals a VLM
+_VLM_CONFIG_KEYS = (
+    "vision_config",
+    "vision_tower",
+    "audio_config",
+    "audio_tower",
+    "image_token_index",
+)
+
+
+def _detect_vlm(config: dict, arch_class: str) -> dict:
+    """Detect if model is a VLM and which auto class to use.
+    
+    VLMs (Gemma4ForConditionalGeneration, LlavaForConditionalGeneration, etc.)
+    must be loaded with AutoModel or AutoModelForConditionalGeneration, not
+    AutoModelForCausalLM. Using the wrong class causes from_pretrained to
+    silently load to CPU even with a valid GPU device_map.
+    """
+    is_vlm = False
+    auto_class = "AutoModelForCausalLM"
+    
+    # Check architecture class name
+    for suffix in _VLM_ARCHITECTURE_SUFFIXES:
+        if arch_class.endswith(suffix):
+            is_vlm = True
+            break
+    
+    # Check config keys that signal multimodal
+    if not is_vlm:
+        for key in _VLM_CONFIG_KEYS:
+            if key in config:
+                is_vlm = True
+                break
+    
+    # Check auto_map for the right loading class
+    auto_map = config.get("auto_map", {})
+    if is_vlm:
+        if "AutoModelForConditionalGeneration" in auto_map:
+            auto_class = "AutoModelForConditionalGeneration"
+        elif "AutoModel" in auto_map:
+            auto_class = "AutoModel"
+        else:
+            # No custom auto_map — use the standard HF auto class
+            # AutoModel handles all architectures correctly
+            auto_class = "AutoModelForConditionalGeneration"
+    
+    if is_vlm:
+        logger.info(f"VLM detected (arch={arch_class}) — will use {auto_class}")
+    
+    return {"is_vlm": is_vlm, "auto_class": auto_class}
 
 
 def _fetch_safetensors_index(model_name: str, token: Optional[str] = None) -> Tuple[Optional[int], Optional[Dict[str, str]]]:
@@ -643,6 +713,9 @@ def probe_model(model_name: str, token: Optional[str] = None) -> ModelProfile:
     # Detect custom code
     custom_info = _detect_custom_code(config)
     
+    # Detect VLM
+    vlm_info = _detect_vlm(config, arch_class)
+    
     # Detect dependencies
     required_libs = _detect_required_libraries(config, model_name)
     min_python = _detect_python_version(config, model_name)
@@ -827,6 +900,8 @@ def probe_model(model_name: str, token: Optional[str] = None) -> ModelProfile:
         lm_head_module=special_modules["lm_head_module"],
         norm_module=special_modules["norm_module"],
         extra_modules=special_modules["extra_modules"],
+        is_vlm=vlm_info["is_vlm"],
+        auto_class=vlm_info["auto_class"],
         raw_config=config,
     )
     

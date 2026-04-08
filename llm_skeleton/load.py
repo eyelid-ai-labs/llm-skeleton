@@ -47,6 +47,20 @@ def execute_plan(
     model_name = plan.profile.model_name
     load_kwargs = plan.get_load_kwargs()
     
+    # Select the correct auto class based on model architecture.
+    # VLMs (ForConditionalGeneration) silently load to CPU when loaded via
+    # AutoModelForCausalLM, even with a valid GPU device_map.
+    auto_class = AutoModelForCausalLM
+    if plan.profile.is_vlm:
+        auto_class_name = plan.profile.auto_class
+        if auto_class_name == "AutoModelForConditionalGeneration":
+            from transformers import AutoModelForConditionalGeneration
+            auto_class = AutoModelForConditionalGeneration
+        elif auto_class_name == "AutoModel":
+            from transformers import AutoModel
+            auto_class = AutoModel
+        logger.info(f"VLM detected — using {auto_class_name} instead of AutoModelForCausalLM")
+    
     logger.info(f"Loading {model_name}...")
     logger.info(f"  Strategy: {plan.strategy.quantization.value}")
     logger.info(f"  Estimated VRAM: {plan.strategy.estimated_vram_gb:.1f}GB")
@@ -71,7 +85,7 @@ def execute_plan(
     
     # Load model
     t0 = time.time()
-    model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
+    model = auto_class.from_pretrained(model_name, **load_kwargs)
     model.eval()
     load_time = time.time() - t0
     

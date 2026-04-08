@@ -164,3 +164,27 @@ class TestLoadKwargs:
         
         assert "quantization_config" in kwargs
         assert "load_in_8bit" not in kwargs  # NEVER this kwarg
+
+
+class TestVLMLoadKwargs:
+    def test_vlm_sets_trust_remote_code(self):
+        """VLM models get trust_remote_code=True even without custom code."""
+        profile = make_mock_profile(num_layers=10, layer_size_gb=1.0)
+        profile.is_vlm = True
+        profile.auto_class = "AutoModelForConditionalGeneration"
+        hardware = make_mock_hardware(1, 80.0)
+
+        plan = plan_loading(profile, hardware, headroom_gb=5.0)
+        kwargs = plan.get_load_kwargs()
+
+        assert kwargs["trust_remote_code"] is True
+
+    def test_non_vlm_no_trust_remote_code(self):
+        """Standard models without custom code get trust_remote_code=False."""
+        profile = make_mock_profile(num_layers=10, layer_size_gb=1.0)
+        hardware = make_mock_hardware(1, 80.0)
+
+        plan = plan_loading(profile, hardware, headroom_gb=5.0)
+        kwargs = plan.get_load_kwargs()
+
+        assert kwargs["trust_remote_code"] is False
