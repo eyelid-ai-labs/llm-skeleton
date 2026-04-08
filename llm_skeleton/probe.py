@@ -6,10 +6,11 @@ Zero VRAM, ~1 second. Extracts everything needed to plan loading.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from enum import Enum
 import logging
 import json
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,13 @@ class ModelProfile:
     # Pre-quantized model (cannot apply BNB on top)
     is_pre_quantized: bool = False          # True if model ships with quantization_config
     pre_quantization_method: str = ""       # "fp8", "gptq", "awq", etc.
+    
+    # Device map paths (detected from safetensors index, or defaults)
+    layer_prefix: str = "model.layers"           # actual prefix from safetensors
+    embed_module: str = "model.embed_tokens"     # actual embed module path
+    lm_head_module: str = "lm_head"              # actual lm_head path
+    norm_module: str = "model.norm"              # actual final norm path
+    extra_modules: List[str] = field(default_factory=list)  # vision_tower etc.
     
     # Raw config for debugging
     raw_config: Dict[str, Any] = field(default_factory=dict)
@@ -446,14 +454,14 @@ def _detect_custom_code(config: dict) -> dict:
     }
 
 
-def _fetch_actual_size(model_name: str, token: Optional[str] = None) -> Optional[int]:
-    """Fetch actual model size from safetensors index metadata.
+def _fetch_safetensors_index(model_name: str, token: Optional[str] = None) -> Tuple[Optional[int], Optional[Dict[str, str]]]:
+    """Fetch actual model size and weight map from safetensors index.
     
-    The index.json has a 'total_size' field that gives the exact byte count
-    of all weight tensors. This is far more accurate than parameter-count math,
-    especially for MoE models where expert dimensions vary.
+    The index.json has:
+    - 'metadata.total_size': exact byte count of all weight tensors
+    - 'weight_map': dict mapping weight names to shard files
     
-    Returns None if index is not available.
+    Returns (total_size, weight_map). Either or both may be None.
     """
     try:
         from huggingface_hub import hf_hub_download
@@ -465,24 +473,119 @@ def _fetch_actual_size(model_name: str, token: Optional[str] = None) -> Optional
         with open(index_path) as f:
             index = json.load(f)
         total_size = index.get("metadata", {}).get("total_size", None)
+        weight_map = index.get("weight_map", None)
         if total_size:
             logger.info(f"Actual weight size from safetensors index: {total_size / (1024**3):.1f}GB")
-        return total_size
+        return total_size, weight_map
     except Exception:
-        # Single-file model or index not available
-        try:
-            from huggingface_hub import hf_hub_download
-            # Try single safetensors file
-            hf_hub_download(
-                repo_id=model_name,
-                filename="model.safetensors",
-                token=token,
-                local_files_only=True,
-            )
-            # If we get here, it exists but we can't easily get size without downloading
-            return None
-        except Exception:
-            return None
+        return None, None
+
+
+def _detect_layer_prefix(weight_map: Dict[str, str]) -> str:
+    """Find the actual module path prefix for transformer layers.
+    
+    Scans weight names for patterns like:
+    - model.layers.0.self_attn... -> "model.layers"
+    - model.language_model.layers.0.self_attn... -> "model.language_model.layers"
+    - transformer.h.0.attn... -> "transformer.h"
+    
+    When multiple prefixes exist (e.g. language model + vision encoder),
+    picks the one with the most layers (the language model).
+    """
+    layer_pattern = re.compile(r'^(.+\.layers?)\.(\d+)\.')
+    prefixes: Dict[str, set] = {}
+    for weight_name in weight_map:
+        m = layer_pattern.match(weight_name)
+        if m:
+            prefix = m.group(1)
+            layer_idx = int(m.group(2))
+            if prefix not in prefixes:
+                prefixes[prefix] = set()
+            prefixes[prefix].add(layer_idx)
+    
+    if not prefixes:
+        return "model.layers"  # fallback
+    
+    # Pick the prefix with the most layers (language model, not vision encoder)
+    best_prefix = max(prefixes, key=lambda p: len(prefixes[p]))
+    logger.info(f"Detected layer prefix: '{best_prefix}' ({len(prefixes[best_prefix])} layers)")
+    return best_prefix
+
+
+def _detect_special_modules(weight_map: Dict[str, str], layer_prefix: str) -> Dict[str, Any]:
+    """Find embed_tokens, lm_head, norm, and extra modules from weight names.
+    
+    VLMs have extra top-level modules (vision_tower, embed_vision, etc.)
+    that need to be placed in the device map.
+    """
+    all_weights = set(weight_map.keys())
+    
+    # Find embedding: look for "embed_tokens" in weight names outside layers
+    embed_name = None
+    for w in sorted(all_weights):
+        if "embed_tokens" in w and "layers" not in w:
+            embed_name = w.rsplit(".", 1)[0]  # strip ".weight"
+            break
+    
+    # Find lm_head
+    lm_head_name = None
+    for w in all_weights:
+        if w.startswith("lm_head."):
+            lm_head_name = "lm_head"
+            break
+    
+    # Find final norm (outside layers, outside vision modules)
+    norm_name = None
+    # Derive expected norm prefix from layer_prefix:
+    # "model.layers" -> "model.norm", "model.language_model.layers" -> "model.language_model.norm"
+    norm_prefix = layer_prefix.rsplit(".", 1)[0] + ".norm" if "." in layer_prefix else "model.norm"
+    for w in sorted(all_weights):
+        if w.startswith(norm_prefix):
+            norm_name = w.rsplit(".", 1)[0]  # strip ".weight"
+            break
+    # Fallback: any top-level norm not in layers/vision
+    if norm_name is None:
+        for w in sorted(all_weights):
+            if "norm" in w and "layers" not in w and "vision" not in w and "encoder" not in w:
+                norm_name = w.rsplit(".", 1)[0]
+                break
+    
+    # Find extra modules (vision tower, embed_vision, multi_modal_projector, etc.)
+    # These are weight paths NOT under the layer prefix, embed, lm_head, or norm
+    known_prefixes = set()
+    if embed_name:
+        known_prefixes.add(embed_name)
+    if lm_head_name:
+        known_prefixes.add(lm_head_name)
+    if norm_name:
+        known_prefixes.add(norm_name)
+    
+    extra_modules: set = set()
+    for w in all_weights:
+        # Skip weights under the language model layer prefix
+        if w.startswith(layer_prefix + "."):
+            continue
+        # Skip known modules
+        if any(w.startswith(kp + ".") for kp in known_prefixes):
+            continue
+        # Extract the top-level module path (2 levels deep for "model.vision_tower")
+        parts = w.split(".")
+        # Try depth 2 first (e.g. "model.vision_tower"), then depth 1
+        for depth in [2, 1]:
+            if len(parts) > depth:
+                candidate = ".".join(parts[:depth])
+                # Don't add the language model base as extra
+                lang_base = layer_prefix.rsplit(".", 1)[0] if "." in layer_prefix else ""
+                if candidate and candidate != lang_base:
+                    extra_modules.add(candidate)
+                    break
+    
+    return {
+        "embed_module": embed_name or "model.embed_tokens",
+        "lm_head_module": lm_head_name or "lm_head",
+        "norm_module": norm_name or "model.norm",
+        "extra_modules": sorted(extra_modules),
+    }
 
 
 def probe_model(model_name: str, token: Optional[str] = None) -> ModelProfile:
@@ -628,7 +731,21 @@ def probe_model(model_name: str, token: Optional[str] = None) -> ModelProfile:
     # Parameter-count math can be wildly off for MoE models (e.g. Qwen3-Coder-Next
     # estimated 1442GB but actual weights are 148GB because expert dimensions are
     # much smaller than hidden_size * intermediate_size implies).
-    actual_size = _fetch_actual_size(model_name, token)
+    actual_size, weight_map = _fetch_safetensors_index(model_name, token)
+    
+    # Detect device map paths from weight map (VLM support)
+    if weight_map:
+        layer_prefix = _detect_layer_prefix(weight_map)
+        special_modules = _detect_special_modules(weight_map, layer_prefix)
+    else:
+        layer_prefix = "model.layers"
+        special_modules = {
+            "embed_module": "model.embed_tokens",
+            "lm_head_module": "lm_head",
+            "norm_module": "model.norm",
+            "extra_modules": [],
+        }
+    
     if actual_size is not None:
         actual_gb = actual_size / (1024**3)
         estimated_gb = total_native / (1024**3)
@@ -705,6 +822,11 @@ def probe_model(model_name: str, token: Optional[str] = None) -> ModelProfile:
         supports_bnb_quantization=supports_bnb,
         is_pre_quantized=is_pre_quantized,
         pre_quantization_method=pre_quant_method,
+        layer_prefix=layer_prefix,
+        embed_module=special_modules["embed_module"],
+        lm_head_module=special_modules["lm_head_module"],
+        norm_module=special_modules["norm_module"],
+        extra_modules=special_modules["extra_modules"],
         raw_config=config,
     )
     

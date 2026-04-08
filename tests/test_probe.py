@@ -11,6 +11,7 @@ from llm_skeleton.probe import (
     _detect_required_libraries, _detect_python_version,
     _estimate_layer_size, _estimate_embedding_size,
     _resolve_effective_config,
+    _detect_layer_prefix, _detect_special_modules,
     NativeDtype, ModelProfile,
 )
 
@@ -285,3 +286,101 @@ class TestTiedEmbeddings:
         explicit_tied_size = _estimate_embedding_size({**base, "tie_word_embeddings": True}, bytes_per_param=2)
 
         assert default_size == explicit_tied_size
+
+
+# ─── Mock weight maps based on real VLM safetensors indices ─────────────────
+
+GEMMA4_WEIGHT_MAP = {
+    "model.language_model.embed_tokens.weight": "model-00001.safetensors",
+    "model.language_model.layers.0.self_attn.q_proj.weight": "model-00001.safetensors",
+    "model.language_model.layers.0.self_attn.k_proj.weight": "model-00001.safetensors",
+    "model.language_model.layers.0.mlp.gate_proj.weight": "model-00001.safetensors",
+    "model.language_model.layers.1.self_attn.q_proj.weight": "model-00001.safetensors",
+    "model.language_model.layers.41.mlp.down_proj.weight": "model-00002.safetensors",
+    "model.language_model.norm.weight": "model-00002.safetensors",
+    "model.vision_tower.encoder.layers.0.self_attn.q_proj.linear.weight": "model-00002.safetensors",
+    "model.vision_tower.encoder.layers.0.self_attn.k_proj.linear.weight": "model-00002.safetensors",
+    "model.vision_tower.encoder.layers.26.mlp.fc2.weight": "model-00002.safetensors",
+    "model.embed_vision.weight": "model-00002.safetensors",
+    "model.multi_modal_projector.linear.weight": "model-00002.safetensors",
+    "lm_head.weight": "model-00002.safetensors",
+}
+
+STANDARD_DECODER_WEIGHT_MAP = {
+    "model.embed_tokens.weight": "model-00001.safetensors",
+    "model.layers.0.self_attn.q_proj.weight": "model-00001.safetensors",
+    "model.layers.0.self_attn.k_proj.weight": "model-00001.safetensors",
+    "model.layers.0.mlp.gate_proj.weight": "model-00001.safetensors",
+    "model.layers.47.mlp.down_proj.weight": "model-00002.safetensors",
+    "model.norm.weight": "model-00002.safetensors",
+    "lm_head.weight": "model-00002.safetensors",
+}
+
+INTERNVL_WEIGHT_MAP = {
+    "model.language_model.layers.0.self_attn.q_proj.weight": "model-00001.safetensors",
+    "model.language_model.layers.0.mlp.gate_proj.weight": "model-00001.safetensors",
+    "model.language_model.layers.31.mlp.down_proj.weight": "model-00002.safetensors",
+    "model.language_model.embed_tokens.weight": "model-00001.safetensors",
+    "model.language_model.norm.weight": "model-00002.safetensors",
+    "model.vision_model.encoder.layers.0.self_attn.q_proj.weight": "model-00002.safetensors",
+    "model.vision_model.encoder.layers.23.mlp.fc2.weight": "model-00002.safetensors",
+    "lm_head.weight": "model-00002.safetensors",
+}
+
+
+class TestDetectLayerPrefix:
+    def test_standard_decoder(self):
+        prefix = _detect_layer_prefix(STANDARD_DECODER_WEIGHT_MAP)
+        assert prefix == "model.layers"
+
+    def test_gemma4_vlm(self):
+        prefix = _detect_layer_prefix(GEMMA4_WEIGHT_MAP)
+        assert prefix == "model.language_model.layers"
+
+    def test_internvl(self):
+        prefix = _detect_layer_prefix(INTERNVL_WEIGHT_MAP)
+        assert prefix == "model.language_model.layers"
+
+    def test_picks_language_model_over_vision_encoder(self):
+        """When both language and vision have 'layers', pick the one with more."""
+        # Gemma-4 has 42 language layers vs 27 vision encoder layers
+        prefix = _detect_layer_prefix(GEMMA4_WEIGHT_MAP)
+        assert "language_model" in prefix
+        assert "vision" not in prefix
+
+    def test_empty_weight_map_returns_default(self):
+        prefix = _detect_layer_prefix({})
+        assert prefix == "model.layers"
+
+
+class TestDetectSpecialModules:
+    def test_standard_decoder(self):
+        modules = _detect_special_modules(STANDARD_DECODER_WEIGHT_MAP, "model.layers")
+        assert modules["embed_module"] == "model.embed_tokens"
+        assert modules["lm_head_module"] == "lm_head"
+        assert modules["norm_module"] == "model.norm"
+        assert modules["extra_modules"] == []
+
+    def test_gemma4_vlm_embed(self):
+        modules = _detect_special_modules(GEMMA4_WEIGHT_MAP, "model.language_model.layers")
+        assert modules["embed_module"] == "model.language_model.embed_tokens"
+
+    def test_gemma4_vlm_norm(self):
+        modules = _detect_special_modules(GEMMA4_WEIGHT_MAP, "model.language_model.layers")
+        assert modules["norm_module"] == "model.language_model.norm"
+
+    def test_gemma4_vlm_lm_head(self):
+        modules = _detect_special_modules(GEMMA4_WEIGHT_MAP, "model.language_model.layers")
+        assert modules["lm_head_module"] == "lm_head"
+
+    def test_gemma4_vlm_extra_modules(self):
+        modules = _detect_special_modules(GEMMA4_WEIGHT_MAP, "model.language_model.layers")
+        extras = modules["extra_modules"]
+        assert "model.vision_tower" in extras
+        assert "model.embed_vision" in extras
+        assert "model.multi_modal_projector" in extras
+
+    def test_internvl_extra_modules(self):
+        modules = _detect_special_modules(INTERNVL_WEIGHT_MAP, "model.language_model.layers")
+        extras = modules["extra_modules"]
+        assert "model.vision_model" in extras

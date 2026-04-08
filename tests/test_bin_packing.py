@@ -251,3 +251,98 @@ class TestEdgeCases:
         )
         assert not result.success
         assert "Embedding" in result.failure_reason
+
+
+class TestVLMDeviceMapPaths:
+    """Test that bin-packing generates correct device map keys for VLMs."""
+
+    def test_standard_decoder_paths(self):
+        """Default paths use model.layers.X convention."""
+        layers = make_uniform_layers(10, 1.0)
+        result = pack_layers(
+            layers,
+            embedding_size_bytes=int(1 * GB),
+            gpu_capacities_bytes=[(0, int(80 * GB))],
+            headroom_bytes=int(5 * GB),
+        )
+        assert result.success
+        assert "model.embed_tokens" in result.device_map
+        assert "model.layers.0" in result.device_map
+        assert "model.norm" in result.device_map
+        assert "lm_head" in result.device_map
+
+    def test_vlm_layer_prefix(self):
+        """VLM paths use model.language_model.layers.X convention."""
+        layers = make_uniform_layers(10, 1.0)
+        result = pack_layers(
+            layers,
+            embedding_size_bytes=int(1 * GB),
+            gpu_capacities_bytes=[(0, int(80 * GB))],
+            headroom_bytes=int(5 * GB),
+            layer_prefix="model.language_model.layers",
+            embed_module="model.language_model.embed_tokens",
+            lm_head_module="lm_head",
+            norm_module="model.language_model.norm",
+        )
+        assert result.success
+        assert "model.language_model.embed_tokens" in result.device_map
+        assert "model.language_model.layers.0" in result.device_map
+        assert "model.language_model.layers.9" in result.device_map
+        assert "model.language_model.norm" in result.device_map
+        assert "lm_head" in result.device_map
+        # Old hardcoded paths should NOT be present
+        assert "model.layers.0" not in result.device_map
+        assert "model.embed_tokens" not in result.device_map
+        assert "model.norm" not in result.device_map
+
+    def test_vlm_extra_modules_placed(self):
+        """Extra modules (vision tower etc.) are placed in device map."""
+        layers = make_uniform_layers(10, 1.0)
+        result = pack_layers(
+            layers,
+            embedding_size_bytes=int(1 * GB),
+            gpu_capacities_bytes=[(0, int(80 * GB))],
+            headroom_bytes=int(5 * GB),
+            layer_prefix="model.language_model.layers",
+            embed_module="model.language_model.embed_tokens",
+            lm_head_module="lm_head",
+            norm_module="model.language_model.norm",
+            extra_modules=["model.vision_tower", "model.embed_vision"],
+        )
+        assert result.success
+        assert "model.vision_tower" in result.device_map
+        assert "model.embed_vision" in result.device_map
+
+    def test_vlm_extra_modules_on_last_gpu(self):
+        """Extra modules are placed on the same GPU as lm_head."""
+        layers = make_uniform_layers(20, 3.0)
+        result = pack_layers(
+            layers,
+            embedding_size_bytes=int(2 * GB),
+            gpu_capacities_bytes=[(0, int(40 * GB)), (1, int(40 * GB))],
+            headroom_bytes=int(2 * GB),
+            extra_modules=["model.vision_tower"],
+        )
+        assert result.success
+        lm_head_gpu = result.device_map["lm_head"]
+        assert result.device_map["model.vision_tower"] == lm_head_gpu
+
+    def test_quantized_packing_uses_vlm_paths(self):
+        """Quantized packing also respects VLM paths."""
+        layers = make_uniform_layers(10, 4.0)
+        result = pack_layers_quantized(
+            layers,
+            embedding_size_bytes=int(1 * GB),
+            gpu_capacities_bytes=[(0, int(80 * GB))],
+            quantization="int8",
+            headroom_bytes=int(5 * GB),
+            layer_prefix="model.language_model.layers",
+            embed_module="model.language_model.embed_tokens",
+            lm_head_module="lm_head",
+            norm_module="model.language_model.norm",
+            extra_modules=["model.vision_tower"],
+        )
+        assert result.success
+        assert "model.language_model.layers.0" in result.device_map
+        assert "model.language_model.embed_tokens" in result.device_map
+        assert "model.vision_tower" in result.device_map

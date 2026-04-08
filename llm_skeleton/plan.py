@@ -254,6 +254,11 @@ def plan_loading(
                 embedding_size_bytes=inflated_embed,
                 gpu_capacities_bytes=gpu_capacities,
                 headroom_bytes=headroom_bytes,
+                layer_prefix=profile.layer_prefix,
+                embed_module=profile.embed_module,
+                lm_head_module=profile.lm_head_module,
+                norm_module=profile.norm_module,
+                extra_modules=profile.extra_modules,
             )
             estimated_gb = profile.size_bf16_gb * dequant_multiplier
             
@@ -264,6 +269,11 @@ def plan_loading(
                 gpu_capacities_bytes=gpu_capacities,
                 quantization="int8",
                 headroom_bytes=headroom_bytes,
+                layer_prefix=profile.layer_prefix,
+                embed_module=profile.embed_module,
+                lm_head_module=profile.lm_head_module,
+                norm_module=profile.norm_module,
+                extra_modules=profile.extra_modules,
             )
             estimated_gb = profile.size_int8_gb
             
@@ -274,6 +284,11 @@ def plan_loading(
                 gpu_capacities_bytes=gpu_capacities,
                 quantization="int4",
                 headroom_bytes=headroom_bytes,
+                layer_prefix=profile.layer_prefix,
+                embed_module=profile.embed_module,
+                lm_head_module=profile.lm_head_module,
+                norm_module=profile.norm_module,
+                extra_modules=profile.extra_modules,
             )
             estimated_gb = profile.size_int4_gb
         else:

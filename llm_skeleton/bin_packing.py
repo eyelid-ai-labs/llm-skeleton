@@ -101,6 +101,12 @@ def pack_layers(
     gpu_capacities_bytes: List[Tuple[int, int]],  # [(gpu_idx, capacity_bytes), ...]
     headroom_bytes: int = 5 * (1024**3),  # 5GB default headroom per GPU
     model_prefix: str = "model",
+    layer_prefix: str = "",
+    embed_module: str = "",
+    lm_head_module: str = "",
+    norm_module: str = "",
+    extra_modules: Optional[List[str]] = None,
+    extra_modules_size_bytes: int = 0,
 ) -> PlacementResult:
     """
     Pack transformer layers onto GPUs with contiguity constraint.
@@ -109,6 +115,7 @@ def pack_layers(
     - Place embedding on first GPU
     - Place layers sequentially, moving to next GPU when current is full
     - Place lm_head on last used GPU (or next if no room)
+    - Place extra modules (vision tower etc.) on last GPU
     - Ensure headroom on every GPU
     
     This is NOT greedy — it considers layer sizes ahead to avoid
@@ -119,11 +126,23 @@ def pack_layers(
         embedding_size_bytes: Size of embed_tokens + lm_head
         gpu_capacities_bytes: Available GPUs with their capacity
         headroom_bytes: Reserved per-GPU for gradient attribution
-        model_prefix: Prefix for device_map keys (usually "model")
+        model_prefix: Legacy prefix for device_map keys (used when layer_prefix not set)
+        layer_prefix: Actual layer prefix from safetensors (e.g. "model.language_model.layers")
+        embed_module: Actual embed module path (e.g. "model.language_model.embed_tokens")
+        lm_head_module: Actual lm_head path (e.g. "lm_head")
+        norm_module: Actual final norm path (e.g. "model.language_model.norm")
+        extra_modules: Extra top-level modules to place (e.g. ["model.vision_tower"])
+        extra_modules_size_bytes: Estimated total size of extra modules
     
     Returns:
         PlacementResult with device_map and allocation details
     """
+    # Resolve paths: use explicit paths if provided, else fall back to model_prefix defaults
+    effective_layer_prefix = layer_prefix or f"{model_prefix}.layers"
+    effective_embed = embed_module or f"{model_prefix}.embed_tokens"
+    effective_lm_head = lm_head_module or "lm_head"
+    effective_norm = norm_module or f"{model_prefix}.norm"
+    effective_extra = extra_modules or []
     if not gpu_capacities_bytes:
         return PlacementResult(success=False, failure_reason="No GPUs provided")
     
@@ -157,7 +176,7 @@ def pack_layers(
     
     # Place layers sequentially with contiguity
     device_map = {}
-    device_map[f"{model_prefix}.embed_tokens"] = allocations[0].gpu_index
+    device_map[effective_embed] = allocations[0].gpu_index
     
     # Also map norm layers that come before embed_tokens
     # (some models have input_layernorm at the top level)
@@ -172,7 +191,7 @@ def pack_layers(
         # Try to fit on current GPU
         if allocations[current_gpu_idx].can_fit(layer_size):
             allocations[current_gpu_idx].place(layer_size, lp.index)
-            device_map[f"{model_prefix}.layers.{lp.index}"] = allocations[current_gpu_idx].gpu_index
+            device_map[f"{effective_layer_prefix}.{lp.index}"] = allocations[current_gpu_idx].gpu_index
         else:
             # Move to next GPU
             current_gpu_idx += 1
@@ -194,7 +213,7 @@ def pack_layers(
                 )
             
             allocations[current_gpu_idx].place(layer_size, lp.index)
-            device_map[f"{model_prefix}.layers.{lp.index}"] = allocations[current_gpu_idx].gpu_index
+            device_map[f"{effective_layer_prefix}.{lp.index}"] = allocations[current_gpu_idx].gpu_index
     
     # Place lm_head + final norm on last used GPU (or next if no room)
     lm_head_gpu = current_gpu_idx
@@ -208,8 +227,16 @@ def pack_layers(
     
     allocations[lm_head_gpu].place(lm_head_size)
     allocations[lm_head_gpu].has_lm_head = True
-    device_map[f"{model_prefix}.norm"] = allocations[lm_head_gpu].gpu_index
-    device_map["lm_head"] = allocations[lm_head_gpu].gpu_index
+    device_map[effective_norm] = allocations[lm_head_gpu].gpu_index
+    device_map[effective_lm_head] = allocations[lm_head_gpu].gpu_index
+    
+    # Place extra modules (vision tower, embed_vision, etc.) on last used GPU
+    if effective_extra:
+        last_gpu = lm_head_gpu
+        if extra_modules_size_bytes > 0:
+            allocations[last_gpu].place(extra_modules_size_bytes)
+        for mod in effective_extra:
+            device_map[mod] = allocations[last_gpu].gpu_index
     
     # Build max_memory dict
     max_memory = {}
@@ -238,6 +265,12 @@ def pack_layers_quantized(
     quantization: str,  # "int8" or "int4"
     headroom_bytes: int = 5 * (1024**3),
     model_prefix: str = "model",
+    layer_prefix: str = "",
+    embed_module: str = "",
+    lm_head_module: str = "",
+    norm_module: str = "",
+    extra_modules: Optional[List[str]] = None,
+    extra_modules_size_bytes: int = 0,
 ) -> PlacementResult:
     """
     Pack layers with quantization-adjusted sizes.
@@ -272,4 +305,10 @@ def pack_layers_quantized(
         gpu_capacities_bytes,
         headroom_bytes,
         model_prefix,
+        layer_prefix=layer_prefix,
+        embed_module=embed_module,
+        lm_head_module=lm_head_module,
+        norm_module=norm_module,
+        extra_modules=extra_modules,
+        extra_modules_size_bytes=extra_modules_size_bytes,
     )

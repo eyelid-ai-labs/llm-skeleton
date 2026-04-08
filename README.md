@@ -187,7 +187,7 @@ Dependencies: `transformers`, `torch`, `huggingface_hub`. Optional: `psutil` for
 pytest tests/ -v
 ```
 
-46 tests covering bin-packing (contiguity, headroom, MoE variance, quantization, edge cases), probe (dtype detection, MoE detection, custom code, library requirements), and planning (strategy selection, GPU subsets, load kwargs). All tests run offline — no GPU or HuggingFace access needed.
+62 tests covering bin-packing (contiguity, headroom, MoE variance, quantization, VLM paths, edge cases), probe (dtype detection, MoE detection, custom code, library requirements, VLM config resolution, VLM weight map detection), and planning (strategy selection, GPU subsets, load kwargs). All tests run offline — no GPU or HuggingFace access needed.
 
 ## Validated On
 

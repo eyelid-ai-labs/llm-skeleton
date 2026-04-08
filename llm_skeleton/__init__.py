@@ -4,7 +4,7 @@ LLM Skeleton: Universal Model Loader Framework.
 Probe → Plan → Load. No surprises.
 """
 
-from llm_skeleton.probe import probe_model, ModelProfile
+from llm_skeleton.probe import probe_model, ModelProfile, _detect_layer_prefix, _detect_special_modules
 from llm_skeleton.plan import plan_loading, LoadingPlan, LoadingStrategy
 from llm_skeleton.load import execute_plan
 from llm_skeleton.hardware import detect_gpus, GPUInfo, HardwareProfile
@@ -14,6 +14,8 @@ from llm_skeleton.compatibility import check_compatibility, CompatibilityReport
 __all__ = [
     "probe_model",
     "ModelProfile",
+    "_detect_layer_prefix",
+    "_detect_special_modules",
     "plan_loading",
     "LoadingPlan",
     "LoadingStrategy",
@@ -26,4 +28,4 @@ __all__ = [
     "CompatibilityReport",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
