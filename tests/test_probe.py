@@ -12,7 +12,7 @@ from llm_skeleton.probe import (
     _estimate_layer_size, _estimate_embedding_size,
     _resolve_effective_config,
     _detect_layer_prefix, _detect_special_modules,
-    _detect_vlm, _resolve_auto_class,
+    _detect_vlm, _resolve_auto_class, _resolve_auto_class_from_mapping,
     NativeDtype, ModelProfile,
 )
 
@@ -389,9 +389,10 @@ class TestDetectSpecialModules:
 
 # ─── Mock configs for VLM detection ────────────────────────────────────────
 
-# Gemma-4: auto_map maps AutoModel -> the ForConditionalGeneration class.
-# The correct loading class is AutoModelForImageTextToText (if it exists)
-# because it's the most specific task class for image+text -> text.
+# Gemma-4: EMPTY auto_map (this is the real config.json shape).
+# The correct class must be resolved via _model_mapping introspection.
+# AutoModelForCausalLM[Gemma4Config] -> Gemma4ForConditionalGeneration (has LM head)
+# AutoModel[Gemma4Config] -> Gemma4Model (bare model, NO LM head — wrong!)
 GEMMA4_VLM_CONFIG = {
     "model_type": "gemma4",
     "architectures": ["Gemma4ForConditionalGeneration"],
@@ -403,10 +404,7 @@ GEMMA4_VLM_CONFIG = {
         "num_attention_heads": 24,
         "vocab_size": 256000,
     },
-    "auto_map": {
-        "AutoModel": "modeling_gemma4.Gemma4ForConditionalGeneration",
-        "AutoModelForCausalLM": "modeling_gemma4.Gemma4ForConditionalGeneration",
-    },
+    # No auto_map — this is the real Gemma-4 config shape
 }
 
 # LLaVA: registers under AutoModelForCausalLM in auto_map
@@ -423,7 +421,7 @@ LLAVA_VLM_CONFIG = {
     },
 }
 
-# InternVL: only registers under AutoModel
+# InternVL: only registers under AutoModel in auto_map
 INTERNVL_VLM_CONFIG = {
     "model_type": "internvl_chat",
     "architectures": ["InternVLChatModel"],
@@ -447,10 +445,10 @@ AUDIO_VLM_CONFIG = {
     },
 }
 
-# VLM with no auto_map at all — relies on architectures field
-VLM_NO_AUTOMAP_CONFIG = {
-    "model_type": "some_vlm",
-    "architectures": ["SomeVLMForImageTextToText"],
+# VLM with no auto_map and unknown model_type — worst case fallback
+VLM_UNKNOWN_TYPE_CONFIG = {
+    "model_type": "totally_unknown_vlm_xyz",
+    "architectures": ["TotallyUnknownForConditionalGeneration"],
     "vision_config": {"hidden_size": 768},
 }
 
@@ -492,41 +490,72 @@ class TestVLMDetection:
 
 
 class TestAutoClassResolution:
-    """Test that _resolve_auto_class picks the right class from auto_map."""
+    """Test that _resolve_auto_class picks the right class."""
 
     def test_standard_llm_gets_causal_lm(self):
         result = _resolve_auto_class(QWEN3_CODER_NEXT_CONFIG, is_vlm=False)
         assert result == "AutoModelForCausalLM"
 
-    def test_gemma4_resolves_from_auto_map(self):
-        """Gemma-4 has AutoModelForCausalLM in auto_map — should pick that
-        over AutoModel because it's higher priority and includes the LM head."""
-        result = _resolve_auto_class(GEMMA4_VLM_CONFIG, is_vlm=True)
-        # auto_map has AutoModelForCausalLM, which is importable and higher
-        # priority than AutoModel. AutoModelForImageTextToText is even higher
-        # priority but is NOT in auto_map, so it falls through.
-        assert result == "AutoModelForCausalLM"
-
-    def test_llava_resolves_causal_lm_from_auto_map(self):
-        """LLaVA registers under AutoModelForCausalLM in auto_map."""
+    def test_llava_resolves_from_auto_map(self):
+        """LLaVA has AutoModelForCausalLM in auto_map — strategy 1."""
         result = _resolve_auto_class(LLAVA_VLM_CONFIG, is_vlm=True)
         assert result == "AutoModelForCausalLM"
 
-    def test_internvl_resolves_auto_model(self):
-        """InternVL only has AutoModel in auto_map — that's the only option."""
+    def test_internvl_resolves_auto_model_from_auto_map(self):
+        """InternVL only has AutoModel in auto_map — strategy 1."""
         result = _resolve_auto_class(INTERNVL_VLM_CONFIG, is_vlm=True)
         assert result == "AutoModel"
 
-    def test_no_automap_falls_back_to_priority(self):
-        """VLM with no auto_map falls back to priority scan of importable classes."""
-        result = _resolve_auto_class(VLM_NO_AUTOMAP_CONFIG, is_vlm=True)
-        # Should pick the first importable class from priority list
+    def test_gemma4_empty_automap_uses_mapping_introspection(self):
+        """Gemma-4 has empty auto_map — must use strategy 2 (mapping introspection).
+        AutoModelForCausalLM[Gemma4Config] -> Gemma4ForConditionalGeneration (has LM head).
+        """
+        result = _resolve_auto_class(GEMMA4_VLM_CONFIG, is_vlm=True)
+        # Must NOT be AutoModel (bare model, no LM head)
+        assert result != "AutoModel", (
+            f"Resolved to AutoModel which loads Gemma4Model (bare, no LM head). "
+            f"Expected AutoModelForCausalLM via mapping introspection."
+        )
+        assert result == "AutoModelForCausalLM"
+
+    def test_unknown_model_type_falls_back_to_causal_lm(self):
+        """Unknown model_type with empty auto_map falls back to AutoModelForCausalLM."""
+        result = _resolve_auto_class(VLM_UNKNOWN_TYPE_CONFIG, is_vlm=True)
+        assert result == "AutoModelForCausalLM"
+
+
+class TestMappingIntrospection:
+    """Test _resolve_auto_class_from_mapping directly."""
+
+    def test_gemma4_mapping_resolves_causal_lm(self):
+        """Gemma4Config is in AutoModelForCausalLM._model_mapping
+        and maps to Gemma4ForConditionalGeneration (has LM head)."""
+        result = _resolve_auto_class_from_mapping("gemma4")
+        assert result == "AutoModelForCausalLM"
+
+    def test_llama_mapping_resolves_causal_lm(self):
+        result = _resolve_auto_class_from_mapping("llama")
+        assert result == "AutoModelForCausalLM"
+
+    def test_unknown_model_type_returns_none(self):
+        result = _resolve_auto_class_from_mapping("totally_unknown_model_xyz_999")
+        assert result is None
+
+    def test_resolved_class_has_lm_head(self):
+        """For known VLM types, the resolved class must have an LM head."""
         import transformers
-        if hasattr(transformers, "AutoModelForImageTextToText"):
-            assert result == "AutoModelForImageTextToText"
-        else:
-            # Older transformers — falls through to AutoModelForCausalLM
-            assert result in ("AutoModelForCausalLM", "AutoModel")
+        for model_type in ["gemma4", "llava"]:
+            result = _resolve_auto_class_from_mapping(model_type)
+            if result is None:
+                continue  # model_type not in this transformers version
+            auto_cls = getattr(transformers, result)
+            from transformers import AutoConfig
+            config_cls = type(AutoConfig.for_model(model_type))
+            resolved_model = auto_cls._model_mapping[config_cls]
+            name = resolved_model.__name__
+            assert "Model" != name.split("For")[0] + "Model" or "ForCausalLM" in name or "ForConditionalGeneration" in name, (
+                f"{result}[{config_cls.__name__}] -> {name} — does not have LM head"
+            )
 
     def test_resolved_class_is_importable(self):
         """Whatever class is resolved must actually exist in transformers."""
@@ -536,7 +565,6 @@ class TestAutoClassResolution:
             (LLAVA_VLM_CONFIG, "LlavaForConditionalGeneration"),
             (INTERNVL_VLM_CONFIG, "InternVLChatModel"),
             (AUDIO_VLM_CONFIG, "WhisperLLMForConditionalGeneration"),
-            (VLM_NO_AUTOMAP_CONFIG, "SomeVLMForImageTextToText"),
         ]:
             result = _detect_vlm(config, arch)
             cls = getattr(transformers, result["auto_class"], None)

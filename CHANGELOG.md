@@ -6,6 +6,37 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-04-08
+
+### Fixed
+
+- Gemma-4 (and other native HF VLMs with empty `auto_map`) now loads correctly.
+  v0.5.0 guessed `AutoModelForImageTextToText` when `auto_map` was empty, which on
+  some transformers versions resolves to the bare `Gemma4Model` (no LM head) instead
+  of `Gemma4ForConditionalGeneration`. The new approach introspects transformers'
+  internal `_model_mapping` to find which auto class actually maps the model's config
+  to a class with an LM head. For Gemma-4: `AutoModelForCausalLM[Gemma4Config]` →
+  `Gemma4ForConditionalGeneration` ✅.
+
+### Changed
+
+- `_resolve_auto_class()` now uses three strategies in order:
+  1. `auto_map` lookup (unchanged — works for LLaVA, InternVL, etc.)
+  2. **New:** `_model_mapping` introspection — uses `AutoConfig.for_model(model_type)`
+     to get the config class, then checks each auto class's `_model_mapping` to find
+     one that resolves to a class with an LM head (`ForCausalLM`,
+     `ForConditionalGeneration`, etc. in the name). This is the definitive answer for
+     native HF models with empty `auto_map`.
+  3. Fallback to `AutoModelForCausalLM` (safest default).
+- Priority order changed to `AutoModelForCausalLM` first (works for both LLMs and
+  most VLMs), then `AutoModelForImageTextToText`, then `AutoModelForVision2Seq`, then
+  `AutoModel`. This matches the empirical finding that `AutoModelForCausalLM` correctly
+  maps Gemma4Config to `Gemma4ForConditionalGeneration`.
+- Gemma-4 test mock config now has an empty `auto_map` to match the real config.json.
+- 82 tests total. New `TestMappingIntrospection` class with 5 tests verifying the
+  `_model_mapping` approach for gemma4, llama, unknown types, LM head detection, and
+  importability.
+
 ## [0.5.0] - 2026-04-08
 
 ### Fixed

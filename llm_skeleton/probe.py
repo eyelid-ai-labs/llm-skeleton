@@ -482,22 +482,93 @@ _VLM_CONFIG_KEYS = (
     "image_token_index",
 )
 
-# Auto class resolution priority for VLMs.
-# Order matters: most specific task classes first (they include the LM head),
-# AutoModel last (bare model without head — wrong weights, last resort).
+# Auto class resolution priority.
 #
-# We check which of these keys exist in the model's auto_map AND are importable
-# from the installed transformers version. This handles:
-# - Gemma-4: auto_map has "AutoModel" -> Gemma4ForConditionalGeneration
-#   but AutoModelForImageTextToText also resolves correctly via architectures
-# - LLaVA: auto_map may have "AutoModelForCausalLM" pointing to the VLM class
-# - InternVL: auto_map has "AutoModel" only
-_VLM_AUTO_CLASS_PRIORITY = (
-    "AutoModelForImageTextToText",  # image+text -> text (Gemma4, LLaVA-Next, etc.)
+# When auto_map is populated, we scan its keys in this order and pick the
+# first one that's importable from the installed transformers.
+#
+# When auto_map is empty, we introspect transformers' _model_mapping to
+# find which auto class resolves this model's config to a class with an
+# LM head.  The order here prefers classes that include the generation
+# head (ForCausalLM, ForConditionalGeneration) over the bare model.
+#
+# AutoModelForCausalLM is first because it works for both standard LLMs
+# AND many VLMs (e.g. Gemma4Config -> Gemma4ForConditionalGeneration).
+_AUTO_CLASS_PRIORITY = (
+    "AutoModelForCausalLM",         # works for LLMs + many VLMs (Gemma-4, LLaVA)
+    "AutoModelForImageTextToText",  # image+text -> text VLMs
     "AutoModelForVision2Seq",       # older transformers name, may not exist
-    "AutoModelForCausalLM",         # some VLMs register here (LLaVA, Qwen-VL)
     "AutoModel",                    # bare model — last resort, may lack LM head
 )
+
+# Substrings in a model class name that indicate it has a generation head.
+_LM_HEAD_INDICATORS = (
+    "ForCausalLM",
+    "ForConditionalGeneration",
+    "ForSeq2SeqLM",
+    "ForVision2Seq",
+    "ForImageTextToText",
+    "ForSpeechSeq2Seq",
+)
+
+
+def _has_lm_head(model_class_name: str) -> bool:
+    """Check if a model class name indicates it has a generation/LM head."""
+    return any(indicator in model_class_name for indicator in _LM_HEAD_INDICATORS)
+
+
+def _resolve_auto_class_from_mapping(model_type: str) -> Optional[str]:
+    """Introspect transformers' _model_mapping to find the best auto class.
+
+    Given a model_type string (e.g. "gemma4"), resolves the config class via
+    AutoConfig.for_model(), then checks each auto class's _model_mapping to
+    see which one maps that config to a model class with an LM head.
+
+    Returns the auto class name, or None if introspection fails.
+    """
+    try:
+        import transformers
+        from transformers import AutoConfig
+
+        config_cls = type(AutoConfig.for_model(model_type))
+
+        for cls_name in _AUTO_CLASS_PRIORITY:
+            auto_cls = getattr(transformers, cls_name, None)
+            if auto_cls is None:
+                continue
+            mapping = getattr(auto_cls, "_model_mapping", None)
+            if mapping is None:
+                continue
+            try:
+                resolved = mapping[config_cls]
+                resolved_name = resolved.__name__ if hasattr(resolved, "__name__") else str(resolved)
+                if _has_lm_head(resolved_name):
+                    logger.info(f"Mapping introspection: {cls_name}[{config_cls.__name__}] "
+                                f"-> {resolved_name} (has LM head)")
+                    return cls_name
+            except (KeyError, TypeError):
+                continue
+
+        # No class with LM head found — pick the first that has any mapping
+        for cls_name in _AUTO_CLASS_PRIORITY:
+            auto_cls = getattr(transformers, cls_name, None)
+            if auto_cls is None:
+                continue
+            mapping = getattr(auto_cls, "_model_mapping", None)
+            if mapping is None:
+                continue
+            try:
+                resolved = mapping[config_cls]
+                logger.info(f"Mapping introspection (no LM head found): {cls_name}[{config_cls.__name__}] "
+                            f"-> {resolved.__name__}")
+                return cls_name
+            except (KeyError, TypeError):
+                continue
+
+    except Exception as e:
+        logger.debug(f"Mapping introspection failed: {e}")
+
+    return None
 
 
 def _resolve_auto_class(config: dict, is_vlm: bool) -> str:
@@ -505,11 +576,17 @@ def _resolve_auto_class(config: dict, is_vlm: bool) -> str:
 
     For standard LLMs this is always AutoModelForCausalLM.
 
-    For VLMs we read the auto_map from config.json and pick the first key
-    that (a) exists in auto_map AND (b) is importable from the installed
-    transformers.  If auto_map is empty or nothing matches, we try each
-    class in priority order against transformers anyway — many VLMs work
-    via the architectures field without an explicit auto_map entry.
+    For VLMs, resolution follows three strategies in order:
+
+    1. auto_map lookup: scan the model's auto_map keys against the priority
+       list and pick the first that's importable from transformers.
+
+    2. Mapping introspection: when auto_map is empty (common for native HF
+       models like Gemma-4), use AutoConfig.for_model(model_type) to get the
+       config class, then check each auto class's _model_mapping to find one
+       that resolves to a class with an LM head.
+
+    3. Fallback: AutoModelForCausalLM (safest default — works for most models).
     """
     if not is_vlm:
         return "AutoModelForCausalLM"
@@ -520,41 +597,41 @@ def _resolve_auto_class(config: dict, is_vlm: bool) -> str:
 
     # Strategy 1: find a class that's both in auto_map AND importable
     if auto_map:
-        for cls_name in _VLM_AUTO_CLASS_PRIORITY:
+        for cls_name in _AUTO_CLASS_PRIORITY:
             if cls_name in auto_map and hasattr(transformers, cls_name):
                 logger.info(f"VLM auto class resolved from auto_map: {cls_name}")
                 return cls_name
 
-    # Strategy 2: no auto_map match — try each importable class in priority.
-    # transformers resolves via the architectures field in config.json, so
-    # AutoModelForImageTextToText.from_pretrained("google/gemma-4-E2B-it")
-    # works even without an auto_map entry for that class.
-    for cls_name in _VLM_AUTO_CLASS_PRIORITY:
-        if hasattr(transformers, cls_name):
-            logger.info(f"VLM auto class resolved by priority fallback: {cls_name}")
-            return cls_name
+    # Strategy 2: introspect _model_mapping using the model_type
+    model_type = config.get("model_type", "")
+    if model_type:
+        resolved = _resolve_auto_class_from_mapping(model_type)
+        if resolved:
+            logger.info(f"VLM auto class resolved from mapping introspection: {resolved}")
+            return resolved
 
-    # Nothing found — shouldn't happen, but AutoModel always exists
-    logger.warning("No suitable auto class found for VLM, falling back to AutoModel")
-    return "AutoModel"
+    # Strategy 3: fallback
+    logger.warning("VLM auto class: auto_map empty and mapping introspection failed "
+                   "— falling back to AutoModelForCausalLM")
+    return "AutoModelForCausalLM"
 
 
 def _detect_vlm(config: dict, arch_class: str) -> dict:
     """Detect if model is a VLM and resolve the correct auto class.
 
     VLMs (Gemma4ForConditionalGeneration, LlavaForConditionalGeneration, etc.)
-    cannot be loaded with AutoModelForCausalLM — that class ignores the
-    device_map and loads to CPU, or instantiates the wrong model class
-    entirely.
+    cannot be loaded with a mismatched auto class — AutoModel loads the bare
+    model without the LM head, causing weight key mismatches and garbage output.
 
     Detection uses two signals:
     1. Architecture class suffix (ForConditionalGeneration, ForVision2Seq, etc.)
     2. Config keys that indicate multimodal components (vision_config, etc.)
 
-    Auto class resolution reads the model's auto_map from config.json and
-    picks the first key that exists in the installed transformers, in priority
-    order from most-specific to least-specific.  This ensures we always get
-    the class that includes the LM head (not the bare AutoModel).
+    Auto class resolution uses three strategies:
+    1. Read auto_map from config.json and pick the first importable match.
+    2. Introspect transformers' _model_mapping to find which auto class maps
+       this model's config to a class with an LM head.
+    3. Fall back to AutoModelForCausalLM.
     """
     is_vlm = False
 
