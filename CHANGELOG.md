@@ -6,6 +6,36 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-04-08
+
+### Fixed
+
+- VLM auto class resolution completely rewritten. v0.4.0 used the non-existent
+  `AutoModelForConditionalGeneration`. v0.4.1 used `AutoModel` which loads the bare
+  model without the LM head, causing weight key mismatches and garbage outputs.
+  The new approach reads the model's `auto_map` from config.json and picks the first
+  key that both (a) exists in `auto_map` and (b) is importable from the installed
+  `transformers` version. Priority order: `AutoModelForImageTextToText` >
+  `AutoModelForVision2Seq` > `AutoModelForCausalLM` > `AutoModel`. This means:
+  - Gemma-4 (auto_map has `AutoModelForCausalLM`) → loads via `AutoModelForCausalLM`
+  - LLaVA (auto_map has `AutoModelForCausalLM`) → loads via `AutoModelForCausalLM`
+  - InternVL (auto_map has only `AutoModel`) → loads via `AutoModel`
+  - VLMs with no auto_map → falls back to first importable class in priority order
+
+### Changed
+
+- New `_resolve_auto_class()` function in `probe.py` that scans the model's `auto_map`
+  keys against the installed `transformers` auto classes. Separated from `_detect_vlm()`
+  for testability.
+- `execute_plan` in `load.py` now uses `getattr(transformers, profile.auto_class)` for
+  dynamic class resolution instead of hardcoded imports. Falls back to
+  `AutoModelForCausalLM` if the resolved class isn't found.
+- Tokenizer loading in `execute_plan` now sets `trust_remote_code=True` for VLMs.
+- 78 tests total (up from 72). New `TestAutoClassResolution` class with 6 tests covering
+  auto_map-driven resolution for Gemma-4, LLaVA, InternVL, no-automap fallback, and an
+  importability guarantee test that verifies every resolved class actually exists in the
+  installed transformers.
+
 ## [0.4.1] - 2026-04-08
 
 ### Fixed

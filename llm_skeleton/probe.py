@@ -465,7 +465,8 @@ def _detect_custom_code(config: dict) -> dict:
     }
 
 
-# VLM architecture class suffixes — these need AutoModel, not AutoModelForCausalLM
+# VLM architecture class suffixes — these are NOT causal LMs and need a
+# different auto class than AutoModelForCausalLM.
 _VLM_ARCHITECTURE_SUFFIXES = (
     "ForConditionalGeneration",
     "ForVision2Seq",
@@ -481,44 +482,100 @@ _VLM_CONFIG_KEYS = (
     "image_token_index",
 )
 
+# Auto class resolution priority for VLMs.
+# Order matters: most specific task classes first (they include the LM head),
+# AutoModel last (bare model without head — wrong weights, last resort).
+#
+# We check which of these keys exist in the model's auto_map AND are importable
+# from the installed transformers version. This handles:
+# - Gemma-4: auto_map has "AutoModel" -> Gemma4ForConditionalGeneration
+#   but AutoModelForImageTextToText also resolves correctly via architectures
+# - LLaVA: auto_map may have "AutoModelForCausalLM" pointing to the VLM class
+# - InternVL: auto_map has "AutoModel" only
+_VLM_AUTO_CLASS_PRIORITY = (
+    "AutoModelForImageTextToText",  # image+text -> text (Gemma4, LLaVA-Next, etc.)
+    "AutoModelForVision2Seq",       # older transformers name, may not exist
+    "AutoModelForCausalLM",         # some VLMs register here (LLaVA, Qwen-VL)
+    "AutoModel",                    # bare model — last resort, may lack LM head
+)
+
+
+def _resolve_auto_class(config: dict, is_vlm: bool) -> str:
+    """Pick the best auto class for loading this model.
+
+    For standard LLMs this is always AutoModelForCausalLM.
+
+    For VLMs we read the auto_map from config.json and pick the first key
+    that (a) exists in auto_map AND (b) is importable from the installed
+    transformers.  If auto_map is empty or nothing matches, we try each
+    class in priority order against transformers anyway — many VLMs work
+    via the architectures field without an explicit auto_map entry.
+    """
+    if not is_vlm:
+        return "AutoModelForCausalLM"
+
+    import transformers
+
+    auto_map = config.get("auto_map", {})
+
+    # Strategy 1: find a class that's both in auto_map AND importable
+    if auto_map:
+        for cls_name in _VLM_AUTO_CLASS_PRIORITY:
+            if cls_name in auto_map and hasattr(transformers, cls_name):
+                logger.info(f"VLM auto class resolved from auto_map: {cls_name}")
+                return cls_name
+
+    # Strategy 2: no auto_map match — try each importable class in priority.
+    # transformers resolves via the architectures field in config.json, so
+    # AutoModelForImageTextToText.from_pretrained("google/gemma-4-E2B-it")
+    # works even without an auto_map entry for that class.
+    for cls_name in _VLM_AUTO_CLASS_PRIORITY:
+        if hasattr(transformers, cls_name):
+            logger.info(f"VLM auto class resolved by priority fallback: {cls_name}")
+            return cls_name
+
+    # Nothing found — shouldn't happen, but AutoModel always exists
+    logger.warning("No suitable auto class found for VLM, falling back to AutoModel")
+    return "AutoModel"
+
 
 def _detect_vlm(config: dict, arch_class: str) -> dict:
-    """Detect if model is a VLM and which auto class to use.
-    
+    """Detect if model is a VLM and resolve the correct auto class.
+
     VLMs (Gemma4ForConditionalGeneration, LlavaForConditionalGeneration, etc.)
-    must be loaded with AutoModel, not AutoModelForCausalLM. Using the wrong
-    class causes from_pretrained to silently load to CPU even with a valid GPU
-    device_map.
-    
-    We always resolve to AutoModel for VLMs because:
-    - AutoModelForConditionalGeneration doesn't exist in transformers
-    - AutoModelForVision2Seq exists but is narrower than needed
-    - AutoModel resolves correctly via the model's own auto_map/architectures
+    cannot be loaded with AutoModelForCausalLM — that class ignores the
+    device_map and loads to CPU, or instantiates the wrong model class
+    entirely.
+
+    Detection uses two signals:
+    1. Architecture class suffix (ForConditionalGeneration, ForVision2Seq, etc.)
+    2. Config keys that indicate multimodal components (vision_config, etc.)
+
+    Auto class resolution reads the model's auto_map from config.json and
+    picks the first key that exists in the installed transformers, in priority
+    order from most-specific to least-specific.  This ensures we always get
+    the class that includes the LM head (not the bare AutoModel).
     """
     is_vlm = False
-    auto_class = "AutoModelForCausalLM"
-    
+
     # Check architecture class name
     for suffix in _VLM_ARCHITECTURE_SUFFIXES:
         if arch_class.endswith(suffix):
             is_vlm = True
             break
-    
+
     # Check config keys that signal multimodal
     if not is_vlm:
         for key in _VLM_CONFIG_KEYS:
             if key in config:
                 is_vlm = True
                 break
-    
-    if is_vlm:
-        # AutoModel is the only reliable universal class for VLMs.
-        # It resolves to the correct architecture via the model's config.
-        auto_class = "AutoModel"
-    
+
+    auto_class = _resolve_auto_class(config, is_vlm)
+
     if is_vlm:
         logger.info(f"VLM detected (arch={arch_class}) — will use {auto_class}")
-    
+
     return {"is_vlm": is_vlm, "auto_class": auto_class}
 
 

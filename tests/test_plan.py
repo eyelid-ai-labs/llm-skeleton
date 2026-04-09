@@ -171,7 +171,7 @@ class TestVLMLoadKwargs:
         """VLM models get trust_remote_code=True even without custom code."""
         profile = make_mock_profile(num_layers=10, layer_size_gb=1.0)
         profile.is_vlm = True
-        profile.auto_class = "AutoModel"
+        profile.auto_class = "AutoModelForImageTextToText"
         hardware = make_mock_hardware(1, 80.0)
 
         plan = plan_loading(profile, hardware, headroom_gb=5.0)
@@ -188,3 +188,15 @@ class TestVLMLoadKwargs:
         kwargs = plan.get_load_kwargs()
 
         assert kwargs["trust_remote_code"] is False
+
+    def test_vlm_auto_class_stored_on_profile(self):
+        """The auto_class field on the profile is used by execute_plan."""
+        profile = make_mock_profile(num_layers=10, layer_size_gb=1.0)
+        profile.is_vlm = True
+        profile.auto_class = "AutoModelForCausalLM"  # LLaVA-style
+        hardware = make_mock_hardware(1, 80.0)
+
+        plan = plan_loading(profile, hardware, headroom_gb=5.0)
+        assert plan.can_load
+        # The auto_class should be preserved through planning
+        assert plan.profile.auto_class == "AutoModelForCausalLM"

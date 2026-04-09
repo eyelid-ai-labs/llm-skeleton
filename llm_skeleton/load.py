@@ -42,21 +42,25 @@ def execute_plan(
     if not plan.can_load:
         raise RuntimeError(f"Cannot load {plan.profile.model_name}: {plan.failure_reason}")
     
+    import transformers
     from transformers import AutoModelForCausalLM, AutoTokenizer
     
     model_name = plan.profile.model_name
     load_kwargs = plan.get_load_kwargs()
     
-    # Select the correct auto class based on model architecture.
-    # VLMs (ForConditionalGeneration) silently load to CPU when loaded via
-    # AutoModelForCausalLM, even with a valid GPU device_map.
-    # AutoModel is the only reliable universal class — it resolves to the
-    # correct architecture via the model's config.json auto_map.
-    auto_class = AutoModelForCausalLM
-    if plan.profile.is_vlm:
-        from transformers import AutoModel
-        auto_class = AutoModel
-        logger.info(f"VLM detected — using AutoModel instead of AutoModelForCausalLM")
+    # Resolve the auto class dynamically from the profile.
+    # For standard LLMs this is AutoModelForCausalLM.
+    # For VLMs, probe.py resolved the correct class from the model's auto_map
+    # (e.g. AutoModelForImageTextToText for Gemma-4, AutoModelForCausalLM for
+    # LLaVA variants that register there, etc.)
+    auto_class_name = plan.profile.auto_class
+    auto_class = getattr(transformers, auto_class_name, None)
+    if auto_class is None:
+        logger.warning(f"Auto class '{auto_class_name}' not found in transformers "
+                       f"— falling back to AutoModelForCausalLM")
+        auto_class = AutoModelForCausalLM
+    elif auto_class_name != "AutoModelForCausalLM":
+        logger.info(f"Using {auto_class_name} (resolved from model config)")
     
     logger.info(f"Loading {model_name}...")
     logger.info(f"  Strategy: {plan.strategy.quantization.value}")
@@ -93,7 +97,7 @@ def execute_plan(
     if load_tokenizer:
         tokenizer = AutoTokenizer.from_pretrained(
             model_name,
-            trust_remote_code=plan.profile.uses_custom_code,
+            trust_remote_code=plan.profile.uses_custom_code or plan.profile.is_vlm,
         )
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
