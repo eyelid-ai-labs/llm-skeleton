@@ -174,7 +174,7 @@ pip install llm-skeleton
 
 Or from source:
 ```bash
-git clone https://github.com/eyelid-ai-labs/llm-skeleton.git
+git clone https://github.com/mindoval/llm-skeleton.git
 cd llm-skeleton
 pip install -e .
 ```

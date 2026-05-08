@@ -11,7 +11,7 @@ license = "MIT"
 license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.9"
 authors = [
-    {name = "Eyelid AI Labs", email = "hello@eyelid.ai"},
+    {name = "Mindoval, Inc.", email = "hello@mindoval.com"},
 ]
 keywords = ["llm", "gpu", "model-loading", "multi-gpu", "huggingface", "transformers", "moe", "fp8"]
 classifiers = [
@@ -41,9 +41,9 @@ quantization = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/eyelid-ai-labs/llm-skeleton"
-Repository = "https://github.com/eyelid-ai-labs/llm-skeleton"
-Issues = "https://github.com/eyelid-ai-labs/llm-skeleton/issues"
+Homepage = "https://github.com/mindoval/llm-skeleton"
+Repository = "https://github.com/mindoval/llm-skeleton"
+Issues = "https://github.com/mindoval/llm-skeleton/issues"
 
 [tool.setuptools.packages.find]
 include = ["llm_skeleton*"]
